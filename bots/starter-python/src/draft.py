@@ -9,4 +9,4 @@ def play():
 
     # Draft memory starts at byte zero and is copied to each champion.
     cambc.draft_memory.submit(b"hello world")
-    cambc.draft.pick(available[below(len(available))])
+    cambc.draft.pick(available[0])
