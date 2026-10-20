@@ -19,8 +19,8 @@ Team, Item = cambc.Team, cambc.ItemType
 #    BANK_MIN_GEMS: bank once carrying at least this many gems (1 -> try 10..20).
 #    BANK_IF_HURT_FRAC: below this health fraction, bank even a small amount
 #    (0.0 -> try 0.6). Together: farm longer when healthy, cash in when in danger.
-BANK_MIN_GEMS = 1
-BANK_IF_HURT_FRAC = 0.0
+BANK_MIN_GEMS = 15
+BANK_IF_HURT_FRAC = 0.6
 
 # 2. Recall threshold (fraction of max health). Starter recalls below 0.35.
 #    RECALL_FRAC_CARRYING applies only while holding gems (0.35 -> try 0.5).
@@ -59,30 +59,46 @@ def blocked_tiles():
     blocked.set(cambc.me().position(), False)
     return blocked
 
-
 def move_towards_closest(goals):
     me = cambc.me()
     origin = me.position()
     if not me.can_move() or goals.is_set(origin):
         return False
 
-    # Only free goals or occupied camp tiles can seed the field.
     blocked = blocked_tiles()
     goals &= ~blocked | cambc.vision.camp_tiles()
     if goals.is_empty():
+        print(f"MOVE r={cambc.round_number()} no_goals", flush=True)
         return False
-    if goals.count() == 1 and not blocked.is_set(goals.positions()[0]):
-        return me.move_towards(goals.positions()[0])
 
-    # Expand from the goals until our current tile is reached.
     field = cambc.DistanceField()
-    field.compute_to(blocked & ~goals, goals, tiles_around(origin, 0), cambc.Bitboard())
+    field.compute_to(
+        blocked & ~goals,
+        goals,
+        tiles_around(origin, 0),
+        cambc.Bitboard()
+    )
 
-    # Choose a reachable step with a smaller distance to the goal.
-    reachable = blocked.reachable_tiles(origin, me.base_stats().base_move_speed)
-    step = min([origin, *reachable.positions()], key=field.get)
-    return step != origin and me.move_absolute(step)
+    reachable = blocked.reachable_tiles(
+        origin, me.base_stats().base_move_speed
+    )
 
+    # Inspect candidate distances; don't assume every tile was visited.
+    candidates = [origin, *reachable.positions()]
+    distances = [(field.get(p), p) for p in candidates]
+    distances.sort(key=lambda item: item[0])
+
+    best_dist, best_pos = distances[0]
+    print(
+        f"MOVE r={cambc.round_number()} from={origin} "
+        f"to={best_pos} dist={best_dist} "
+        f"candidates={len(candidates)}",
+        flush=True
+    )
+
+    if best_pos == origin:
+        return False
+    return me.move_absolute(best_pos)
 
 def attack_if_in_range(target):
     # Make one basic attack if the target is already in attack range.
@@ -156,6 +172,25 @@ def wants_to_bank(me):
         return True
     return me.health() < me.max_health() * BANK_IF_HURT_FRAC
 
+def submit_if_in_range(me):
+    if me.gem_count() <= 0:
+        return False
+
+    for altar in game_map.altars().positions():
+        if cambc.vision.has_altar_lock(altar):
+            continue
+
+        if distance(me.position(), altar) <= cambc.constants.SUBMIT_GEMS_RANGE:
+            if LOG_EVENTS:
+                print(
+                    f"BANK r={cambc.round_number()} "
+                    f"gems={me.gem_count()}",
+                    flush=True
+                )
+            me.submit_gems(altar)
+            return True
+
+    return False
 
 class Bot:
     def __init__(self):
@@ -165,6 +200,8 @@ class Bot:
         self.was_alive = True    # for death logging
         self.last_gems = 0
         self.last_health = 0
+        self.last_camp_position = None
+        self.last_camp_move_round = 0
 
     def buy_items(self):
         # Spend only on power shards of the randomly chosen stat.
@@ -219,6 +256,9 @@ class Bot:
             if LOG_EVENTS:
                 print(f"RECALL r={cambc.round_number()} gems={me.gem_count()} "
                       f"hp={me.health()} result={result}", flush=True)
+            return
+
+        if submit_if_in_range(me):
             return
 
         # Attack the first enemy champion already in range.
