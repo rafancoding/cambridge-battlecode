@@ -4,7 +4,7 @@ from randomness import below
 # 4
 # 8
 # 
-PICKS = [9, 10, 11]
+PICKS = [3, 4, 8]
 
 def play():
     chosen = cambc.draft.current_draft(cambc.Team.ALLY)
