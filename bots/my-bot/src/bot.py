@@ -19,8 +19,8 @@ Team, Item = cambc.Team, cambc.ItemType
 #    BANK_MIN_GEMS: bank once carrying at least this many gems (1 -> try 10..20).
 #    BANK_IF_HURT_FRAC: below this health fraction, bank even a small amount
 #    (0.0 -> try 0.6). Together: farm longer when healthy, cash in when in danger.
-BANK_MIN_GEMS = 1
-BANK_IF_HURT_FRAC = 0.0
+BANK_MIN_GEMS = 10
+BANK_IF_HURT_FRAC = 0.6
 
 # 2. Recall threshold (fraction of max health). Starter recalls below 0.35.
 #    RECALL_FRAC_CARRYING applies only while holding gems (0.35 -> try 0.5).
