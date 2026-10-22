@@ -1,5 +1,4 @@
 
-
 """Starter bot + four switchable experiments.
 
 Every switch below defaults to the starter's behaviour, so an unmodified copy of
@@ -12,38 +11,20 @@ from randomness import below
 
 Team, Item = cambc.Team, cambc.ItemType
 
-# ---------------------------------------------------------------------------
-# EXPERIMENT SWITCHES   (starter value -> suggested value to try)
-# ---------------------------------------------------------------------------
-# 1. Banking rule. Starter banks as soon as it holds any gem.
-#    BANK_MIN_GEMS: bank once carrying at least this many gems (1 -> try 10..20).
-#    BANK_IF_HURT_FRAC: below this health fraction, bank even a small amount
-#    (0.0 -> try 0.6). Together: farm longer when healthy, cash in when in danger.
-BANK_MIN_GEMS = 15
+BANK_MIN_GEMS = 1
 BANK_IF_HURT_FRAC = 0.6
 
-# 2. Recall threshold (fraction of max health). Starter recalls below 0.35.
-#    RECALL_FRAC_CARRYING applies only while holding gems (0.35 -> try 0.5).
 RECALL_FRAC = 0.35
 RECALL_FRAC_CARRYING = 0.35
 
-# 3. After recalling, avoid the camp group you were nearest to for this many
-#    rounds (0 = off -> try 150..300).
 AVOID_ROUNDS = 0
 
-# 4. Print DEATH / BANK / RECALL lines to the bot's stdout log.
 LOG_EVENTS = True
 
-# 5. Flee before recalling. If hurt and an enemy champion or camp monster is
-#    within FLEE_DIST tiles, walk toward your spawn instead of calling recall
-#    (0 = off = starter behaviour -> try 4). Recall only once nothing is close.
-FLEE_DIST = 5
-# ---------------------------------------------------------------------------
-
+FLEE_DIST = 3
 
 def distance(a, b):
     return a.chebyshev_distance(b)
-
 
 def tiles_around(position, radius):
     tiles = cambc.Bitboard()
@@ -58,17 +39,30 @@ def blocked_tiles():
                | cambc.vision.camp_tiles() | cambc.vision.teleport_tiles())
     blocked.set(cambc.me().position(), False)
     return blocked
-
+    
 def move_towards_closest(goals):
     me = cambc.me()
     origin = me.position()
-    if not me.can_move() or goals.is_set(origin):
+
+    if not me.can_move():
+        print(
+            f"MOVE r={cambc.round_number()} BLOCKED can_move=False pos={origin}",
+            flush=True,
+        )
+        return False
+
+    if goals.is_set(origin):
+        print(
+            f"MOVE r={cambc.round_number()} ALREADY_ON_GOAL pos={origin}",
+            flush=True,
+        )
         return False
 
     blocked = blocked_tiles()
     goals &= ~blocked | cambc.vision.camp_tiles()
+
     if goals.is_empty():
-        print(f"MOVE r={cambc.round_number()} no_goals", flush=True)
+        print(f"MOVE r={cambc.round_number()} NO_GOALS pos={origin}", flush=True)
         return False
 
     field = cambc.DistanceField()
@@ -76,29 +70,36 @@ def move_towards_closest(goals):
         blocked & ~goals,
         goals,
         tiles_around(origin, 0),
-        cambc.Bitboard()
+        cambc.Bitboard(),
     )
 
     reachable = blocked.reachable_tiles(
         origin, me.base_stats().base_move_speed
     )
-
-    # Inspect candidate distances; don't assume every tile was visited.
+    
     candidates = [origin, *reachable.positions()]
     distances = [(field.get(p), p) for p in candidates]
     distances.sort(key=lambda item: item[0])
 
     best_dist, best_pos = distances[0]
+
     print(
-        f"MOVE r={cambc.round_number()} from={origin} "
-        f"to={best_pos} dist={best_dist} "
-        f"candidates={len(candidates)}",
-        flush=True
+        f"MOVE r={cambc.round_number()} pos={origin} "
+        f"best={best_pos} dist={best_dist} "
+        f"reachable={len(candidates)} goals={goals.count()}",
+        flush=True,
     )
 
-    if best_pos == origin:
+    if best_pos == origin or best_dist == 65535:
+        print(f"MOVE r={cambc.round_number()} NO_VALID_STEP", flush=True)
         return False
-    return me.move_absolute(best_pos)
+
+    moved = me.move_absolute(best_pos)
+    print(
+        f"MOVE r={cambc.round_number()} move_absolute_result={moved}",
+        flush=True,
+    )
+    return moved
 
 def attack_if_in_range(target):
     # Make one basic attack if the target is already in attack range.
@@ -106,6 +107,12 @@ def attack_if_in_range(target):
     if (not me.can_attack() or not target.is_visible() or target.health() <= 0
             or not me.attack_tiles().is_set(target.position())):
         return False
+    print(
+    f"ATTACK r={cambc.round_number()} "
+    f"pos={me.position()} target={target} "
+    f"camp_hp={target.health()} gems={me.gem_count()}",
+    flush=True,
+)
     me.attack(target)
     return True
 
@@ -120,31 +127,88 @@ def nearest_group_index(position):
                 best, best_index = d, index
     return best_index
 
-
 def farm_camps(avoid):
-    # Attack a camp already in range, otherwise move toward the nearest camp tiles.
+    print(
+    f"CAMP r={cambc.round_number()} "
+    f"pos={cambc.me().position()} "
+    f"visible_camps={len(list(cambc.vision.camps()))} "
+    f"gems={cambc.me().gem_count()}",
+    flush=True,
+)
+
     for camp in cambc.vision.camps():
-        if attack_if_in_range(camp):
+        print(
+            f"CHECK_ATTACK r={cambc.round_number()} camp={camp}",
+            flush=True,
+        )
+        result = attack_if_in_range(camp)
+        print(
+            f"CHECK_RESULT r={cambc.round_number()} "
+            f"camp={camp} result={result}",
+            flush=True,
+        )
+
+        if result:
+            print(
+                f"AFTER_ATTACK_REACHED r={cambc.round_number()}",
+                flush=True,
+            )
+            group = camp.camp_group()
+            print(
+            f"GROUP_CAMPS r={cambc.round_number()} "
+            f"camps={[(str(c.kind()), c.spawn_position()) for c in group.camps()]}",
+            flush=True,
+            )
+            print(
+                f"AFTER_ATTACK r={cambc.round_number()} "
+                f"gems={cambc.me().gem_count()} "
+                f"group_state={group.state()} "
+                f"group_gems={group.gem_value()}",
+                flush=True,
+            )
             return
 
-    # Union every group's spawn tiles except respawning or recently-avoided groups.
     goals = cambc.Bitboard()
     visible = cambc.vision.visible_tiles()
     now = cambc.round_number()
+
+    for index, group in enumerate(game_map.camp_groups()):
+        try:
+            state = group.state()
+            print(
+                f"GROUP r={now} id={index} state={state} "
+                f"gems_reward={group.gem_value()} "
+                f"camps={len(group.camps())}",
+                flush=True,
+            )
+        except cambc.Error as exc:
+            print(f"GROUP r={now} id={index} state_error={exc}", flush=True)
+
     for index, group in enumerate(game_map.camp_groups()):
         if avoid.get(index, 0) > now:
             continue
-        if (not (group.spawn_tiles() & visible).is_empty()
-                and isinstance(group.state(), game_map.CampGroupRespawning)):
+
+        if (
+            not (group.spawn_tiles() & visible).is_empty()
+            and isinstance(group.state(), game_map.CampGroupRespawning)
+        ):
             continue
+
         goals |= group.spawn_tiles()
 
-    # Fresh vision after movement may reveal a camp already in range.
+    # The current tile isn't useful as a destination if no camp is here.
+    goals.set(cambc.me().position(), False)
+
+    print(
+    f"FARM r={cambc.round_number()} pos={cambc.me().position()} " 
+    f"gems={cambc.me().gem_count()} goals={goals.count()}",
+    flush=True,
+    )
+
     if move_towards_closest(goals):
         for camp in cambc.vision.camps():
             if attack_if_in_range(camp):
                 return
-
 
 def threatened(me):
     # True if an enemy champion or a living camp monster is within FLEE_DIST.
@@ -157,12 +221,10 @@ def threatened(me):
             return True
     return False
 
-
 def flee_to_spawn():
     goals = cambc.Bitboard()
     goals |= game_map.spawn_region(Team.ALLY)
     return move_towards_closest(goals)
-
 
 def wants_to_bank(me):
     gems = me.gem_count()
@@ -200,8 +262,6 @@ class Bot:
         self.was_alive = True    # for death logging
         self.last_gems = 0
         self.last_health = 0
-        self.last_camp_position = None
-        self.last_camp_move_round = 0
 
     def buy_items(self):
         # Spend only on power shards of the randomly chosen stat.
@@ -246,8 +306,9 @@ class Bot:
         if not at_spawn and me.health() < me.max_health() * frac:
             # Experiment 5: recall seems to get interrupted while under attack,
             # so get away from the threat first.
-            if FLEE_DIST > 0 and threatened(me) and flee_to_spawn():
-                return
+            if FLEE_DIST > 0 and threatened(me) and me.gem_count() == 0:
+                if flee_to_spawn():
+                    return
             if AVOID_ROUNDS > 0:
                 group = nearest_group_index(me.position())
                 if group is not None:
@@ -266,8 +327,7 @@ class Bot:
             if attack_if_in_range(enemy):
                 return
 
-        # Bank carried gems (experiment 1 decides when).
-        if wants_to_bank(me):
+        if me.gem_count() > 0 and wants_to_bank(me):
             goals = cambc.Bitboard()
             for altar in game_map.altars().positions():
                 if cambc.vision.has_altar_lock(altar):
@@ -286,4 +346,6 @@ class Bot:
 
         me.set_priority(1 + below(100))
 
+ 
+ 
 
