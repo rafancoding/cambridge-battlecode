@@ -16,7 +16,7 @@ from randomness import below
 # 10. Tavi
 # 11. Heart of Ruin
 
-PICKS = [11, 2, 1, 3, 0]
+PICKS = [11, 6, 1, 3, 0]
 
 def play():
     chosen = cambc.draft.current_draft(cambc.Team.ALLY)
