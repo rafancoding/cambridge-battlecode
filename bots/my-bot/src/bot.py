@@ -13,8 +13,7 @@ RECALL_FRAC = 0.35
 RECALL_FRAC_CARRYING = 0.35
 AVOID_ROUNDS = 0
 LOG_EVENTS = False
-FLEE_DIST = 3
-
+FLEE_DIST = 5
 
 def distance(a, b):
     return a.chebyshev_distance(b)
@@ -39,7 +38,6 @@ def blocked_tiles():
     blocked.set(cambc.me().position(), False)
     return blocked
 
-
 def move_towards_closest(goals):
     me = cambc.me()
     origin = me.position()
@@ -48,10 +46,29 @@ def move_towards_closest(goals):
         return False
 
     blocked = blocked_tiles()
+    original_goals = cambc.Bitboard()
+    original_goals |= goals
+
     goals &= (~blocked | cambc.vision.camp_tiles())
 
     if goals.is_empty():
-        return False
+        if LOG_EVENTS:
+            print("PATH: filter removed all goals; using original goals")
+        goals = original_goals
+
+    if LOG_EVENTS:
+        print(
+            f"PATH after_filter={len(list(goals.positions()))}"
+        )
+        if goals.is_empty():
+            return False
+
+    if LOG_EVENTS:
+        print(
+            f"GOALS round={cambc.round_number()} "
+            f"origin=({origin.x},{origin.y}) "
+            f"goal_count={len(list(goals.positions()))}"
+        )
 
     field = cambc.DistanceField()
     field.compute_to(
@@ -62,12 +79,22 @@ def move_towards_closest(goals):
     )
 
     reachable = blocked.reachable_tiles(
-        origin, me.base_stats().base_move_speed
+    origin, me.base_stats().base_move_speed
     )
     reachable_positions = list(reachable.positions())
     goal_positions = list(goals.positions())
 
+    if LOG_EVENTS:
+        print(
+            f"PATH_DEBUG reachable={len(reachable_positions)} "
+            f"goals={[(p.x, p.y) for p in goal_positions]} "
+            f"speed={me.base_stats().base_move_speed}"
+        )
+
     finite_candidates = []
+    if LOG_EVENTS:
+        print(f"PATH_CHECK origin_dist={field.get(origin)} "
+            f"reachable={[(p.x, p.y, field.get(p)) for p in reachable_positions]}")
     for pos in reachable_positions:
         dist = field.get(pos)
         if dist != 65535:
@@ -75,28 +102,41 @@ def move_towards_closest(goals):
 
     if finite_candidates:
         finite_candidates.sort(key=lambda item: item[0])
-        _, best_pos = finite_candidates[0]
-        return me.move_absolute(best_pos)
+        best_dist, best_pos = finite_candidates[0]
+
+        if LOG_EVENTS:
+            print(
+                f"PATH round={cambc.round_number()} "
+                f"from=({origin.x},{origin.y}) "
+                f"to=({best_pos.x},{best_pos.y}) "
+                f"dist={best_dist} "
+                f"candidates={len(finite_candidates)}"
+            )
+
+        result = me.move_absolute(best_pos)
+
+        if LOG_EVENTS:
+            print(f"PATH_MOVE result={result}")
+
+        return result
 
     # Fallback if the distance field cannot find a reachable route.
-    current_distance = min(
-        distance(origin, goal) for goal in goal_positions
-    )
-
-    improving = []
-    for pos in reachable_positions:
-        heuristic = min(
-            distance(pos, goal) for goal in goal_positions
+    if reachable_positions:
+        reachable_positions.sort(
+            key=lambda pos: min(distance(pos, goal) for goal in goal_positions)
         )
-        if heuristic < current_distance:
-            improving.append((heuristic, pos))
 
-    if improving:
-        improving.sort(key=lambda item: item[0])
-        return me.move_absolute(improving[0][1])
+        best_pos = reachable_positions[0]
+
+        if best_pos != origin:
+            if LOG_EVENTS:
+                print(
+                    f"PATH_FALLBACK from=({origin.x},{origin.y}) "
+                    f"to=({best_pos.x},{best_pos.y})"
+                )
+            return me.move_absolute(best_pos)
 
     return False
-
 
 def attack_if_in_range(target):
     me = cambc.me()
@@ -136,6 +176,30 @@ def use_damage_ability_on_camp(camp):
     return False
 
 
+def use_damage_ability_on_champion(enemy):
+    me = cambc.me()
+
+    for ability in me.abilities():
+        if not ability.is_ready():
+            continue
+
+        if not (ability.is_damage() or ability.is_aoe_damage()):
+            continue
+
+        if not ability.can_target_enemies():
+            continue
+
+        try:
+            if not ability.valid_tiles().is_set(enemy.position()):
+                continue
+
+            if ability.use(enemy):
+                return True
+        except cambc.Error:
+            continue
+
+    return False
+
 def farm_camps(bot, avoid):
     # Use damage abilities and basic attacks against visible camps.
     for camp in cambc.vision.camps():
@@ -165,8 +229,18 @@ def farm_camps(bot, avoid):
 
     goals.set(cambc.me().position(), False)
 
+    if LOG_EVENTS:
+        print(
+            f"FARM round={now} "
+            f"visible_camps={len(list(cambc.vision.camps()))} "
+            f"goals={len(list(goals.positions()))}"
+        )
+
     if not goals.is_empty():
         moved = move_towards_closest(goals)
+
+        if LOG_EVENTS:
+            print(f"FARM_MOVE moved={moved}")
 
         if moved:
             for camp in cambc.vision.camps():
@@ -207,6 +281,14 @@ def flee_to_spawn():
     goals |= game_map.spawn_region(Team.ALLY)
     return move_towards_closest(goals)
 
+def escape_then_recall(me):
+    # First move away from nearby threats.
+    if threatened(me):
+        if flee_to_spawn():
+            return
+
+    # Recall only after creating some distance.
+    me.recall()
 
 def submit_if_in_range(me):
     if me.gem_count() <= 0:
@@ -249,49 +331,58 @@ class Bot:
 
     def explore(self, me):
         pos = me.position()
-        self.visited.add((pos.x, pos.y))
 
-        centre = cambc.Vec2(
-            game_map.width() // 2,
-            game_map.height() // 2,
-        )
+        # Keep pursuing the current target until reached or invalid.
+        if self.explore_target is not None:
+            if distance(pos, self.explore_target) > 2:
+                goals = cambc.Bitboard()
+                goals.set(self.explore_target)
 
-        # First head towards the centre.
-        if self.explore_target is None:
-            self.explore_target = centre
+                if move_towards_closest(goals):
+                    return True
 
-        if distance(pos, self.explore_target) <= 2:
             self.explore_target = None
 
-        # Then visit the nearest unvisited camp spawn tile.
-        if self.explore_target is None:
-            candidates = []
+        # Choose a new camp spawn tile only when needed.
+        visible = cambc.vision.visible_tiles()
+        candidates = []
 
-            for group in game_map.camp_groups():
-                for tile in group.spawn_tiles().positions():
-                    key = (tile.x, tile.y)
+        for group in game_map.camp_groups():
+            if (
+                not (group.spawn_tiles() & visible).is_empty()
+                and isinstance(group.state(), game_map.CampGroupRespawning)
+            ):
+                continue
 
-                    if key not in self.visited:
-                        candidates.append((distance(pos, tile), tile))
+            for tile in group.spawn_tiles().positions():
+                if distance(pos, tile) > 2:
+                    candidates.append(tile)
 
-            if candidates:
-                candidates.sort(key=lambda item: item[0])
-                self.explore_target = candidates[0][1]
-            else:
-                # Reset exploration once all spawn tiles have been visited.
-                self.visited.clear()
-                self.visited.add((pos.x, pos.y))
-                self.explore_target = centre
+        if not candidates:
+            centre = cambc.Vec2(
+                game_map.width() // 2,
+                game_map.height() // 2,
+            )
+            self.explore_target = centre
+        else:
+            candidates.sort(key=lambda tile: distance(pos, tile))
+            self.explore_target = candidates[0]
 
         goals = cambc.Bitboard()
         goals.set(self.explore_target)
-
-        moved = move_towards_closest(goals)
-
-        if not moved and me.can_move():
-            self.explore_target = None
+        return move_towards_closest(goals)
 
     def play_turn(self):
+        if LOG_EVENTS:
+            me = cambc.me()
+            print(
+                f"TURN round={cambc.round_number()} "
+                f"pos=({me.position().x},{me.position().y}) "
+                f"alive={me.is_alive()} "
+                f"can_move={me.can_move()} "
+                f"can_attack={me.can_attack()}"
+            )
+
         if self.chosen_stat is None:
             self.chosen_stat = 2
 
@@ -305,6 +396,20 @@ class Bot:
             or (not me.can_move() and not me.can_attack())
         ):
             return
+
+        # Recall to spawn when critically wounded.
+        if me.health() < me.base_stats().base_health * 0.35:
+            if threatened(me):
+                if flee_to_spawn():
+                    return
+            else:
+                me.recall()
+                return
+
+        # Protect carried gems from nearby threats.
+        if me.gem_count() > 0 and threatened(me):
+            if flee_to_spawn():
+                return
 
         # Buy items while at the allied spawn.
         at_spawn = game_map.spawn_region(Team.ALLY).is_set(me.position())
@@ -332,12 +437,22 @@ class Bot:
 
             return
 
-        # Attack a visible enemy champion if one is in range.
         for enemy in cambc.vision.champions(Team.ENEMY):
+            if not enemy.is_visible() or enemy.health() <= 0:
+                continue
+
+            if use_damage_ability_on_champion(enemy):
+                return
+
             if attack_if_in_range(enemy):
                 return
 
-        # Otherwise farm camps or explore.
+        if LOG_EVENTS:
+            print("BEFORE FARM")
+
         farm_camps(self, self.avoid)
+
+        if LOG_EVENTS:
+            print("AFTER FARM")
 
         me.set_priority(1 + below(100))
