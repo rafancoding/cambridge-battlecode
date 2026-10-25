@@ -371,6 +371,10 @@ def farm_camps(bot, avoid):
                         f"group={index} "
                         f"visible={not (group.spawn_tiles() & visible).is_empty()} "
                         f"respawning={isinstance(group.state(), game_map.CampGroupRespawning)}"
+                        f"gold={group.gold_value()} "
+                        f"gems={group.gem_value()} "
+                        f"max_respawn={group.max_respawn_timer()} "
+                        f"state={group.state()}"
                     )
                 continue
 

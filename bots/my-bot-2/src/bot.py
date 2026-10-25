@@ -7,7 +7,7 @@ from randomness import below
 
 Team, Item = cambc.Team, cambc.ItemType
 
-BANK_MIN_GEMS = 1
+BANK_MIN_GEMS = 3
 BANK_IF_HURT_FRAC = 0.6
 RECALL_FRAC = 0.35
 RECALL_FRAC_CARRYING = 0.35
@@ -51,19 +51,22 @@ def move_towards_closest(goals):
             f"goal_count={len(list(goals.positions()))}"
         )
 
-    if not me.can_move() or goals.is_empty() or goals.is_set(origin):
+    if not me.can_move() or goals.is_empty():
         return False
 
     blocked = blocked_tiles()
-    original_goals = cambc.Bitboard()
-    original_goals |= goals
 
-    goals &= (~blocked | cambc.vision.camp_tiles())
+    blocked = blocked_tiles()
+    goals &= ~blocked
 
     if goals.is_empty():
-        if LOG_EVENTS:
-            print("PATH: filter removed all goals; using original goals")
-        goals = original_goals
+        return False
+
+    if goals.is_set(origin):
+        goals.set(origin, False)
+
+    if goals.is_empty():
+        return False
 
     if LOG_EVENTS:
         print(
@@ -137,7 +140,6 @@ def move_towards_closest(goals):
         )
 
     return False
-
 
 def attack_if_in_range(target):
     me = cambc.me()
@@ -520,6 +522,23 @@ def submit_if_in_range(me):
 
     return False
 
+def has_visible_farm_target(avoid):
+    visible = cambc.vision.visible_tiles()
+    now = cambc.round_number()
+
+    for index, group in enumerate(game_map.camp_groups()):
+        if avoid.get(index, 0) > now:
+            continue
+
+        if (group.spawn_tiles() & visible).is_empty():
+            continue
+
+        if isinstance(group.state(), game_map.CampGroupRespawning):
+            continue
+
+        return True
+
+    return False
 
 class Bot:
     def __init__(self):
@@ -651,7 +670,7 @@ class Bot:
                 f"gems={me.gem_count()} "
                 f"pos=({me.position().x},{me.position().y})"
             )
-
+        '''
         if me.gem_count() > 0:
             if submit_if_in_range(me):
                 self.bank_target = None
@@ -689,7 +708,62 @@ class Bot:
 
             move_towards_closest(goals)
             return
+        '''
 
+        if me.gem_count() > 0:
+            # Always bank immediately if already in submission range.
+            if submit_if_in_range(me):
+                self.bank_target = None
+                return
+
+            health_fraction = (
+                me.health() / max(1, me.base_stats().base_health)
+            )
+
+            must_bank = (
+                me.gem_count() >= 5
+                or health_fraction <= BANK_IF_HURT_FRAC
+                or not has_visible_farm_target(self.avoid)
+            )
+
+            # With a small load and good health, collect visible camps first.
+            if not must_bank:
+                farm_camps(self, self.avoid)
+                return
+
+            # Existing banking behaviour.
+            altars = [
+                altar
+                for altar in game_map.altars().positions()
+                if not cambc.vision.has_altar_lock(altar)
+            ]
+
+            if not altars:
+                self.bank_target = None
+                return
+
+            if self.bank_target not in altars:
+                self.bank_target = min(
+                    altars,
+                    key=lambda altar: distance(me.position(), altar),
+                )
+
+            goals = tiles_around(
+                self.bank_target,
+                cambc.constants.SUBMIT_GEMS_RANGE,
+            )
+
+            if LOG_EVENTS:
+                            print(
+                                f"BANK_TARGET round={cambc.round_number()} "
+                                f"altar=({self.bank_target.x},{self.bank_target.y}) "
+                                f"pos=({me.position().x},{me.position().y}) "
+                                f"gems={me.gem_count()}"
+                            )
+
+            move_towards_closest(goals)
+            return
+        
         for enemy in cambc.vision.champions(Team.ENEMY):
             if not enemy.is_visible() or enemy.health() <= 0:
                 continue
