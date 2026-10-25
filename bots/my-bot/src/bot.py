@@ -14,6 +14,7 @@ RECALL_FRAC_CARRYING = 0.35
 AVOID_ROUNDS = 0
 LOG_EVENTS = True
 FLEE_DIST = 5
+DASH_HEALTH_THRESHOLD = 0.35
 
 def distance(a, b):
     return a.chebyshev_distance(b)
@@ -37,6 +38,7 @@ def blocked_tiles():
     )
     blocked.set(cambc.me().position(), False)
     return blocked
+
 
 def move_towards_closest(goals):
     me = cambc.me()
@@ -86,7 +88,7 @@ def move_towards_closest(goals):
     )
 
     reachable = blocked.reachable_tiles(
-    origin, me.base_stats().base_move_speed
+        origin, me.base_stats().base_move_speed
     )
     reachable_positions = list(reachable.positions())
     goal_positions = list(goals.positions())
@@ -98,7 +100,6 @@ def move_towards_closest(goals):
             f"speed={me.base_stats().base_move_speed}"
         )
 
-    
     origin_dist = field.get(origin)
     finite_candidates = []
 
@@ -137,6 +138,7 @@ def move_towards_closest(goals):
 
     return False
 
+
 def attack_if_in_range(target):
     me = cambc.me()
 
@@ -174,6 +176,7 @@ def use_damage_ability_on_camp(camp):
 
     return False
 
+
 def use_damage_ability_on_champion(enemy):
     me = cambc.me()
 
@@ -198,6 +201,7 @@ def use_damage_ability_on_champion(enemy):
 
     return False
 
+
 def use_escape_ability(me):
     pos = me.position()
     threats = []
@@ -207,13 +211,12 @@ def use_escape_ability(me):
         if enemy.is_visible() and enemy.health() > 0:
             threats.append((enemy.position(), FLEE_DIST))
 
-    # Monoliths can threaten us from beyond ordinary melee range.
+    # Monoliths are threats; ordinary camps are not.
     for camp in cambc.vision.camps():
-        if camp.health() <= 0:
+        if camp.health() <= 0 or not camp.is_monolith():
             continue
-        radius = camp.attack_range()
-        if camp.is_monolith():
-            radius = max(radius, FLEE_DIST)
+
+        radius = max(camp.attack_range(), FLEE_DIST)
         threats.append((camp.position(), radius))
 
     if not threats:
@@ -228,14 +231,19 @@ def use_escape_ability(me):
 
     current_score = danger_score(pos)
 
-    # Only spend a dash when currently in danger.
+    # Only spend a dash when in danger and health is low.
+    health_fraction = me.health() / max(
+        1, me.base_stats().base_health
+    )
+
     if current_score > 0:
+        return False
+
+    if health_fraction > DASH_HEALTH_THRESHOLD:
         return False
 
     for ability in me.abilities():
         if not ability.is_ready() or not ability.is_dash():
-            continue
-        if not ability.can_target_ground():
             continue
 
         try:
@@ -286,12 +294,23 @@ def use_escape_ability(me):
 
     return False
 
+
 def farm_camps(bot, avoid):
     me = cambc.me()
     pos = me.position()
 
-    # Attack visible camps before choosing where to move.
+    # Living monolith spawn tiles must never become farming targets.
+    monolith_tiles = {
+        camp.spawn_position()
+        for camp in cambc.vision.camps()
+        if camp.is_monolith() and camp.health() > 0
+    }
+
+    # Attack visible ordinary camps before choosing where to move.
+    # Monoliths must never be attacked.
     for camp in cambc.vision.camps():
+        if camp.is_monolith():
+            continue
         if use_damage_ability_on_camp(camp):
             return
         if attack_if_in_range(camp):
@@ -310,24 +329,28 @@ def farm_camps(bot, avoid):
     # Keep the current target if it is still a valid camp spawn tile.
     target = bot.farm_target
     target_valid = False
-    
+
     if target is not None:
-        for index, group in enumerate(game_map.camp_groups()):
-            if not group.spawn_tiles().is_set(target):
-                continue
+        # Do not retain a target that is a living monolith spawn tile.
+        if target in monolith_tiles:
+            bot.farm_target = None
+        else:
+            for index, group in enumerate(game_map.camp_groups()):
+                if not group.spawn_tiles().is_set(target):
+                    continue
 
-            if avoid.get(index, 0) > now:
+                if avoid.get(index, 0) > now:
+                    break
+
+                # Only check the camp's state when its spawn tiles are visible.
+                if (group.spawn_tiles() & visible).is_empty():
+                    break
+
+                if isinstance(group.state(), game_map.CampGroupRespawning):
+                    break
+
+                target_valid = True
                 break
-
-            # Only check the camp's state when its spawn tiles are visible.
-            if (group.spawn_tiles() & visible).is_empty():
-                break
-
-            if isinstance(group.state(), game_map.CampGroupRespawning):
-                break
-
-            target_valid = True
-            break
 
     if not target_valid:
         bot.farm_target = None
@@ -355,6 +378,10 @@ def farm_camps(bot, avoid):
                 if tile == pos:
                     continue
 
+                # Do not select a living monolith spawn tile.
+                if tile in monolith_tiles:
+                    continue
+
                 if tile in bot.failed_farm_targets:
                     continue
 
@@ -368,9 +395,14 @@ def farm_camps(bot, avoid):
 
     target = bot.farm_target
 
+    # Final safeguard against pursuing a living monolith spawn tile.
+    if target in monolith_tiles:
+        bot.farm_target = None
+        target = None
+
     if target is None:
-    # No available camp: keep exploring, but don't retain a stale
-    # farm target that can pull the champion back next action.
+        # No available camp: keep exploring, but don't retain a stale
+        # farm target that can pull the champion back next action.
         bot.farm_target = None
         bot.explore(me)
         return
@@ -426,6 +458,7 @@ def farm_camps(bot, avoid):
             bot.farm_target = None
             bot.farm_target_failures = 0
 
+
 def threatened(me):
     here = me.position()
 
@@ -451,6 +484,7 @@ def flee_to_spawn():
     goals |= game_map.spawn_region(Team.ALLY)
     return move_towards_closest(goals)
 
+
 def escape_then_recall(me):
     # First move away from nearby threats.
     if threatened(me):
@@ -459,6 +493,7 @@ def escape_then_recall(me):
 
     # Recall only after creating some distance.
     me.recall()
+
 
 def submit_if_in_range(me):
     if me.gem_count() <= 0:
@@ -482,7 +517,7 @@ def submit_if_in_range(me):
                 )
             me.submit_gems(altar)
             return True
-        
+
     return False
 
 
@@ -514,7 +549,11 @@ class Bot:
     def explore(self, me):
         pos = me.position()
         if LOG_EVENTS:
-            print(f"EXPLORE pos={me.position()} target={self.explore_target} farm_target={self.farm_target}")
+            print(
+                f"EXPLORE pos={me.position()} "
+                f"target={self.explore_target} "
+                f"farm_target={self.farm_target}"
+            )
 
         # Keep pursuing the current target until reached or invalid.
         if self.explore_target is not None:
@@ -599,7 +638,7 @@ class Bot:
             else:
                 me.recall()
                 return
-            
+
         # Buy items while at the allied spawn.
         at_spawn = game_map.spawn_region(Team.ALLY).is_set(me.position())
 
@@ -613,7 +652,6 @@ class Bot:
                 f"pos=({me.position().x},{me.position().y})"
             )
 
-        
         if me.gem_count() > 0:
             if submit_if_in_range(me):
                 self.bank_target = None
