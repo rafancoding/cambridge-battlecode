@@ -305,7 +305,7 @@ pub fn call(name: &str, a: &[usize]) -> i64 {
                     0
                 }
                 "champion_items" | "champion_consumables" => {
-                    let n = if name == "champion_items" { 42 } else { 4 };
+                    let n = if name == "champion_items" { 84 } else { 4 };
                     let p = a[1] as *mut u32;
                     for i in 0..n {
                         p.add(i).write(i as u32);
@@ -668,6 +668,19 @@ pub fn call(name: &str, a: &[usize]) -> i64 {
                         (a[0], a[1])
                     };
                     std::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, a[2]);
+                    0
+                }
+                "bc_DistanceField_Copy" => {
+                    std::ptr::copy(a[0] as *const u16, a[1] as *mut u16, 64);
+                    0
+                }
+                "bc_DistanceField_CopyWithMask" => {
+                    let bits = *(a[1] as *const u64);
+                    for bit in 0..64 {
+                        if bits & (1u64 << bit) != 0 {
+                            (a[2] as *mut u16).add(bit).write(*(a[0] as *const u16).add(bit));
+                        }
+                    }
                     0
                 }
                 "bc_DistanceField_Get" | "bc_DistanceField_Set" => {

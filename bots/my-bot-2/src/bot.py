@@ -7,13 +7,13 @@ from randomness import below
 
 Team, Item = cambc.Team, cambc.ItemType
 
-BANK_MIN_GEMS = 3
+BANK_MIN_GEMS = 1
 BANK_IF_HURT_FRAC = 0.6
 RECALL_FRAC = 0.35
 RECALL_FRAC_CARRYING = 0.35
 AVOID_ROUNDS = 0
 LOG_EVENTS = True
-FLEE_DIST = 5
+FLEE_DIST = 6
 DASH_HEALTH_THRESHOLD = 0.35
 
 def distance(a, b):
@@ -53,14 +53,16 @@ def move_towards_closest(goals):
 
     if not me.can_move() or goals.is_empty():
         return False
-
+    
     blocked = blocked_tiles()
 
-    blocked = blocked_tiles()
-    goals &= ~blocked
+    original_goals = cambc.Bitboard()
+    original_goals |= goals
+
+    goals &= (~blocked | cambc.vision.camp_tiles())
 
     if goals.is_empty():
-        return False
+        goals = original_goals
 
     if goals.is_set(origin):
         goals.set(origin, False)
@@ -496,6 +498,40 @@ def escape_then_recall(me):
     # Recall only after creating some distance.
     me.recall()
 
+def intercept_enemy_recall(me):
+    enemies = [
+        enemy
+        for enemy in cambc.vision.champions(Team.ENEMY)
+        if enemy.is_visible()
+        and enemy.health() > 0
+        and enemy.is_recalling()
+    ]
+
+    if not enemies:
+        return False
+
+    # Deal damage immediately if possible.
+    enemies.sort(
+        key=lambda enemy: distance(me.position(), enemy.position())
+    )
+
+    for enemy in enemies:
+        if use_damage_ability_on_champion(enemy):
+            return True
+        if attack_if_in_range(enemy):
+            return True
+
+    # Don't abandon our own valuable gem load to chase.
+    if me.gem_count() > 0 or not me.can_move():
+        return False
+
+    # Approach an adjacent, unblocked tile instead of the
+    # champion's occupied tile.
+    enemy = enemies[0]
+    goals = tiles_around(enemy.position(), 1)
+    goals.set(enemy.position(), False)
+
+    return move_towards_closest(goals)
 
 def submit_if_in_range(me):
     if me.gem_count() <= 0:
@@ -519,24 +555,6 @@ def submit_if_in_range(me):
                 )
             me.submit_gems(altar)
             return True
-
-    return False
-
-def has_visible_farm_target(avoid):
-    visible = cambc.vision.visible_tiles()
-    now = cambc.round_number()
-
-    for index, group in enumerate(game_map.camp_groups()):
-        if avoid.get(index, 0) > now:
-            continue
-
-        if (group.spawn_tiles() & visible).is_empty():
-            continue
-
-        if isinstance(group.state(), game_map.CampGroupRespawning):
-            continue
-
-        return True
 
     return False
 
@@ -633,7 +651,7 @@ class Bot:
             )
 
         if self.chosen_stat is None:
-            self.chosen_stat = 2
+            self.chosen_stat = 0
 
         me = cambc.me()
 
@@ -644,6 +662,10 @@ class Bot:
             or me.is_teleporting()
             or (not me.can_move() and not me.can_attack())
         ):
+            return
+
+        # Interrupt visible enemy recalls when practical.
+        if intercept_enemy_recall(me):
             return
 
         if use_escape_ability(me):
@@ -670,67 +692,13 @@ class Bot:
                 f"gems={me.gem_count()} "
                 f"pos=({me.position().x},{me.position().y})"
             )
-        '''
-        if me.gem_count() > 0:
-            if submit_if_in_range(me):
-                self.bank_target = None
-                return
-
-            # Keep pursuing the same unlocked altar while carrying gems.
-            altars = [
-                altar
-                for altar in game_map.altars().positions()
-                if not cambc.vision.has_altar_lock(altar)
-            ]
-
-            if not altars:
-                self.bank_target = None
-                return
-
-            if self.bank_target not in altars:
-                self.bank_target = min(
-                    altars,
-                    key=lambda altar: distance(me.position(), altar),
-                )
-
-            goals = tiles_around(
-                self.bank_target,
-                cambc.constants.SUBMIT_GEMS_RANGE,
-            )
-
-            if LOG_EVENTS:
-                print(
-                    f"BANK_TARGET round={cambc.round_number()} "
-                    f"altar=({self.bank_target.x},{self.bank_target.y}) "
-                    f"pos=({me.position().x},{me.position().y}) "
-                    f"gems={me.gem_count()}"
-                )
-
-            move_towards_closest(goals)
-            return
-        '''
 
         if me.gem_count() > 0:
             # Always bank immediately if already in submission range.
             if submit_if_in_range(me):
                 self.bank_target = None
                 return
-
-            health_fraction = (
-                me.health() / max(1, me.base_stats().base_health)
-            )
-
-            must_bank = (
-                me.gem_count() >= 5
-                or health_fraction <= BANK_IF_HURT_FRAC
-                or not has_visible_farm_target(self.avoid)
-            )
-
-            # With a small load and good health, collect visible camps first.
-            if not must_bank:
-                farm_camps(self, self.avoid)
-                return
-
+    
             # Existing banking behaviour.
             altars = [
                 altar

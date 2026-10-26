@@ -223,6 +223,28 @@ module Ability_kind : sig
   val to_string : t -> string
 end
 
+module Item_family : sig
+  (** Item selection key, independent of shard/emblem tier. *)
+  type t = Monster | Power | Durability | Treasure | Jungle | Home | Bruiser | Tribute | Capture | Prospector | Hunter | Skirmish | Greed | Collectors
+  (** Convert a family to its engine enum value. *)
+  val to_int : t -> int
+  (** Decode an engine family value; raises on an unknown value. *)
+  val of_int : int -> t
+  (** All emblem families in engine enum order. *)
+  val all : t list
+end
+
+module Item_stat : sig
+  (** Item selection key, independent of shard/emblem tier. *)
+  type t = Strength | Focus | Health
+  (** Convert a stat type to its engine enum value. *)
+  val to_int : t -> int
+  (** Decode an engine stat type; raises on an unknown value. *)
+  val of_int : int -> t
+  (** All emblem stat types in engine enum order. *)
+  val all : t list
+end
+
 module Item : sig
   type t =
       | Monster_shard_of_strength
@@ -268,12 +290,59 @@ module Item : sig
       | Bruiser_shard_of_health
       | Bruiser_emblem_of_health
 
+    | Tribute_shard_of_strength
+    | Tribute_emblem_of_strength
+    | Tribute_shard_of_focus
+    | Tribute_emblem_of_focus
+    | Tribute_shard_of_health
+    | Tribute_emblem_of_health
+    | Capture_shard_of_strength
+    | Capture_emblem_of_strength
+    | Capture_shard_of_focus
+    | Capture_emblem_of_focus
+    | Capture_shard_of_health
+    | Capture_emblem_of_health
+    | Prospector_shard_of_strength
+    | Prospector_emblem_of_strength
+    | Prospector_shard_of_focus
+    | Prospector_emblem_of_focus
+    | Prospector_shard_of_health
+    | Prospector_emblem_of_health
+    | Hunter_shard_of_strength
+    | Hunter_emblem_of_strength
+    | Hunter_shard_of_focus
+    | Hunter_emblem_of_focus
+    | Hunter_shard_of_health
+    | Hunter_emblem_of_health
+    | Skirmish_shard_of_strength
+    | Skirmish_emblem_of_strength
+    | Skirmish_shard_of_focus
+    | Skirmish_emblem_of_focus
+    | Skirmish_shard_of_health
+    | Skirmish_emblem_of_health
+    | Greed_shard_of_strength
+    | Greed_emblem_of_strength
+    | Greed_shard_of_focus
+    | Greed_emblem_of_focus
+    | Greed_shard_of_health
+    | Greed_emblem_of_health
+    | Collectors_shard_of_strength
+    | Collectors_emblem_of_strength
+    | Collectors_shard_of_focus
+    | Collectors_emblem_of_focus
+    | Collectors_shard_of_health
+    | Collectors_emblem_of_health
+
   (** Every value, in declaration order. *)
   val all : t list
   (** [to_string x] is the name of [x].
       @param x Value to name. *)
   val to_string : t -> string
 end
+
+(** Select an item by family and stat. [shard] defaults to [true]; [false] selects an emblem. *)
+val get_item_enum : ?shard:bool -> Item_family.t -> Item_stat.t -> Item.t
+
 
 module Buff_kind : sig
   type t =
@@ -899,6 +968,13 @@ module Distance_field : sig
   (** [copy d] is an independent copy.
       @param d Distance field. *)
   val copy : t -> t
+  (** [copy_from destination source] copies every distance into existing storage.
+      With [~mask], only selected tiles are copied; all unselected destination values
+      are preserved and mask padding is ignored. Self-copy is a no-op.
+      @param mask Tiles to copy; omit to copy the entire field.
+      @param destination Field to update.
+      @param source Field to copy from. *)
+  val copy_from : ?mask:Bitboard.t -> t -> t -> unit
   (** Map width in tiles.
       @param d Distance field. *)
   val width : t -> int
@@ -1459,6 +1535,12 @@ end
 module Camp_group : sig
   type t
   type state = Alive | Reward_available | Respawning of int
+  type capture_type = No_capture_available | Ally_capturing | Contested | Enemy_capturing | Capture_available
+  type capture_state = { timer : int; state : capture_type }
+  (** Read visible group capture progress, even if its occupants are hidden.
+      Timer is remaining turns when capturing, configured maximum otherwise. *)
+  val capture_state : t -> capture_state
+
 
   (** [equal a b] is true for the same group.
       @param a First group.
@@ -1872,8 +1954,8 @@ module Draft_memory : sig
 end
 
 module Debug : sig
-  (** Drawing is available during draft and gameplay. Both teams' drawings last
-      for the current round and clear at the next round, or when gameplay begins. *)
+  (** Gameplay drawings last until the start of the drawing champion's next turn.
+      Draft drawings clear at the next draft round, or when gameplay begins. *)
   (** [draw_dot p rgb] draws a debug dot in the replay.
       @param p Tile to mark.
       @param rgb Packed [0xRRGGBB] colour. *)

@@ -20,13 +20,18 @@ pub use sys::{CampStats, ChampionStats};
 pub(crate) use types::detail::{self, Entity, EntityKind, EntityTarget};
 pub use types::*;
 pub use unit::*;
-pub use world::{AltarLock, CampGroup, CampGroupState, DraftMemory, SharedMemory, Teleport, Ward};
+pub use world::{AltarLock, CampGroup, CampGroupState, CampGroupCaptureState, DraftMemory, SharedMemory, Teleport, Ward};
+/// Re-exported so bots can use the SDK's pinned version without their own dependency.
+pub use bitflags;
+/// Re-exported so bots can use the SDK's pinned version without their own dependency.
+pub use bytemuck;
 /// Map geometry and immutable terrain/spawn/camp snapshots.
 pub mod map {
+    pub use crate::CampGroupCaptureType;
     pub use crate::world::{
         altars, bushes, camp, camp_groups, height, holes, is_in_bounds, reflect_horizontal,
         reflect_vertical, rotate_180, spawn_region, symmetry, walls, width, CampGroup,
-        CampGroupState,
+        CampGroupState, CampGroupCaptureState,
     };
 }
 /// Live visibility, occupancy and visible-entity queries.
@@ -45,8 +50,8 @@ pub mod vision {
 pub mod draft {
     pub use crate::world::{current_draft, draft_pick as pick, draft_team_size as team_size};
 }
-/// Replay debug drawing during draft and gameplay. Drawings last for the current
-/// round; both teams clear at the next round, or when draft transitions to gameplay.
+/// Gameplay drawings last until the start of the drawing champion's next turn.
+/// Draft drawings clear at the next draft round, or when gameplay begins.
 pub mod debug {
     pub use crate::world::{debug_draw_dot as draw_dot, debug_draw_line as draw_line};
 }

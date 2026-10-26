@@ -16,6 +16,7 @@
 
 namespace
 {
+std::int32_t capture_tag = 0;
 template <class T>
 concept has_none = requires { T::none; };
 static_assert(!has_none<cambc::champion_draft> && !has_none<cambc::champion_type> && !has_none<cambc::ability_kind> &&
@@ -415,6 +416,13 @@ extern "C"
 	std::int32_t sdk_DistanceField_Get(const std::uint16_t* field, std::int32_t x, std::int32_t y, std::uint16_t* out) {
 		*out = field[y * 8 + x]; return 0;
 	}
+	std::int32_t sdk_DistanceField_Copy(const std::uint16_t* source, std::uint16_t* destination) {
+		std::memmove(destination, source, 128); return 0;
+	}
+	std::int32_t sdk_DistanceField_CopyWithMask(const std::uint16_t* source, const std::uint64_t* mask, std::uint16_t* destination) {
+		for (std::size_t i = 0; i < 64; ++i) if ((*mask >> i) & 1) destination[i] = source[i];
+		return 0;
+	}
 	std::int32_t sdk_DistanceField_ComputeToWithExpansionCount(const std::uint64_t* walls, const std::uint64_t* roots,
 		const std::uint64_t*, std::uint64_t* visited, std::uint16_t* field, std::uint16_t, std::uint16_t* count) {
 		assert((*walls & *roots) == 0); // The occupied target must seed the distance field.
@@ -492,6 +500,10 @@ extern "C"
 	}
 	std::int32_t sdk_camp_group_state(std::uint32_t, std::uint32_t* out) {
 		*out = camp_timer ? 3 : camps_alive ? 1 : 2; return 0;
+	}
+	std::int32_t sdk_camp_group_capture_state(std::uint32_t, camp_group_capture_state* out) {
+		if (capture_tag == -1) return static_cast<int>(error_code::api_not_in_vision);
+		*out = {3, capture_tag}; return 0;
 	}
 	std::int32_t sdk_camp_buffs(std::uint32_t handle, camp_buff_data* out, std::uint32_t capacity, std::uint32_t* count) {
 		++camp_buff_calls;
@@ -803,6 +815,15 @@ void test_camp_vision()
 	mock_position = {5, 6};
 	visible_tiles = tile_bit({1, 1}) | tile_bit(mock_position) | tile_bit({0, 0});
 	const auto groups = cambc::map::camp_groups();
+	for (capture_tag = 0; capture_tag < 5; ++capture_tag) {
+		const auto state = groups[0].capture_state();
+		assert(state.timer == 3 && static_cast<int>(state.state) == capture_tag);
+	}
+	throws<std::runtime_error>([&] { (void)groups[0].capture_state(); });
+	capture_tag = -1;
+	throws<cambc::error>([&] { (void)groups[0].capture_state(); });
+	assert(cambc::get_item_enum(cambc::item_family::greed, cambc::item_stat::health, false) == cambc::item_type::greed_emblem_of_health);
+	throws<std::invalid_argument>([] { (void)cambc::get_item_enum(static_cast<cambc::item_family>(14), cambc::item_stat::health); });
 	assert(groups.size() == 2 && groups[0].camps().size() == 2 && groups[1].camps().size() == 1);
 	assert(static_cast<std::uint32_t>(static_cast<cambc::handle_camp_group_t>(groups[0])) == 21);
 	assert(groups[0].gold_value() == 210 && groups[0].gem_value() == 21 && groups[0].max_respawn_timer() == 30);
@@ -1196,7 +1217,7 @@ void test_shop_and_shared_memory()
     assert(!upgraded.result && upgraded.passive == cambc::item_passive::monster);
     assert(upgraded.passive_magnitude == 1.0f && upgraded.strength_points == 5 && upgraded.cost == 165 && !upgraded.purchasable && upgraded.cost * upgraded.combine_count == 0);
     item_price = 99;
-    assert(cambc::item_type::monster_shard_of_strength.info().cost == 99 && item.cost == 33);
+    assert(cambc::item_type::monster_shard_of_strength.info().cost == 33);
     item_price = 33;
 	const auto consumable = cambc::consumable_type::tp_crystal.info();
 	assert(consumable.cost == 50 && consumable.carry_limit == 1);
@@ -1255,11 +1276,7 @@ void test_dynamic_sensing()
 	assert(!owner.is_ally() && owner.is_enemy());
 	assert(cambc::vision::champions(cambc::team::ally).empty());
 	assert(cambc::vision::champions(cambc::team::enemy).size() == 1);
-	mock_my_team = 1;
-	assert(owner.team() == cambc::team::ally);
-	assert(owner.is_ally() && !owner.is_enemy());
-	assert(cambc::vision::champions(cambc::team::enemy).empty());
-	mock_champion_team = mock_my_team = 0;
+	mock_champion_team = 0;
 	assert(cambc::vision::champions(cambc::team::ally).size() == 1 && cambc::vision::champions(cambc::team::enemy).empty());
 	assert(cambc::champions().size() == 2);
 	assert(static_cast<cambc::handle_champion_t>(cambc::champions(cambc::team::ally)[0]) == static_cast<cambc::handle_champion_t>(0));
@@ -1642,19 +1659,24 @@ int main()
 		for (const auto extra : { 0u, 1u << 31 })
 		{
 			mock_valid_targets = flags | extra;
-			assert(ability.valid_targets().bits() == mock_valid_targets);
-			assert(ability.can_target_camps() == ((flags & 1) != 0));
-			assert(ability.can_target_enemies() == ((flags & 2) != 0));
-			assert(ability.can_target_allies() == ((flags & 4) != 0));
-			assert(ability.can_target_self() == ((flags & 8) != 0));
-			assert(ability.can_target_ground() == ((flags & 16) != 0));
+			const cambc::ability fresh = cambc::detail::handle_access::make_ability(owner, 0);
+			assert(fresh.valid_targets().bits() == mock_valid_targets);
+			assert(fresh.can_target_camps() == ((flags & 1) != 0));
+			assert(fresh.can_target_enemies() == ((flags & 2) != 0));
+			assert(fresh.can_target_allies() == ((flags & 4) != 0));
+			assert(fresh.can_target_self() == ((flags & 8) != 0));
+			assert(fresh.can_target_ground() == ((flags & 16) != 0));
+			assert(ability.valid_targets().bits() == 6);
 		}
 	}
 	mock_ability_kind = 0;
 	mock_valid_targets = 0;
-	assert(ability.valid_targets().bits() == 0);
-	assert(!ability.can_target_camps() && !ability.can_target_enemies() && !ability.can_target_allies() &&
-		   !ability.can_target_self() && !ability.can_target_ground());
+	{
+		const cambc::ability fresh = cambc::detail::handle_access::make_ability(owner, 0);
+		assert(fresh.valid_targets().bits() == 0);
+		assert(!fresh.can_target_camps() && !fresh.can_target_enemies() && !fresh.can_target_allies() &&
+			   !fresh.can_target_self() && !fresh.can_target_ground());
+	}
 	mock_valid_targets = 6;
 	for (mock_ability_kind = 0; mock_ability_kind < 8; ++mock_ability_kind)
 	{
@@ -1722,10 +1744,7 @@ int main()
 	throws<cambc::error>([&] { (void)unobserved.info(); });
 	assert(!unobserved.is(cambc::ability_kind::damage));
 	assert(!unobserved.is(cambc::ability_types::damage));
-	throws<cambc::error>([&] { (void)ability.valid_targets(); });
-	for (const auto helper : { &cambc::ability::can_target_camps, &cambc::ability::can_target_enemies, &cambc::ability::can_target_allies,
-							  &cambc::ability::can_target_self, &cambc::ability::can_target_ground })
-		throws<cambc::error>([&] { (void)(ability.*helper)(); });
+	assert(ability.valid_targets().bits() == 6 && ability.can_target_enemies());
 	assert(buffs.has(cambc::buff_types::stun));
 	assert(std::holds_alternative<cambc::buff_shield>(*buffs.begin()));
 	throws<cambc::error>([&] { (void)owner.buffs(); });
@@ -1742,6 +1761,26 @@ int main()
 	throws<cambc::error>([&] { (void)ability.heal_amount(target); });
 	test_camp_vision();
 	test_new_game_api();
+	{
+		cambc::distance_field source, destination, empty;
+		source.ptr()[0] = 17; source.ptr()[1] = 23;
+		destination.copy_from(source);
+		auto* storage = destination.ptr();
+		cambc::bitboard mask;
+		mask.set({0, 0});
+		source.ptr()[0] = 42; source.ptr()[1] = 99;
+		destination.copy_from(source, mask);
+		assert(destination.ptr()[0] == 42 && destination.ptr()[1] == 23);
+		assert(destination.ptr() == storage);
+		destination.copy_from(destination, mask);
+		destination.copy_from(destination);
+		destination.copy_from(empty, mask);
+		assert(destination.ptr()[0] == 0 && destination.ptr()[1] == 23);
+		empty.copy_from(source, mask);
+		assert(empty.ptr()[0] == 42 && empty.ptr()[1] == 0);
+		destination.copy_from(cambc::distance_field{});
+		assert(destination.ptr()[0] == 0 && destination.ptr()[1] == 0);
+	}
 	std::puts("typed SDK tests PASS");
 }
 

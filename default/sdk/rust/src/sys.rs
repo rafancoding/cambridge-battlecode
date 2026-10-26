@@ -4,6 +4,10 @@
 //! Raw enum tags and ABI-only fields are validated or kept private by typed wrappers.
 #![allow(non_snake_case)]
 use crate::Vec2;
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CampGroupCaptureState { pub timer: i32, pub state: i32 }
+const _: () = { assert!(core::mem::size_of::<CampGroupCaptureState>() == 8); };
 /// Exact engine item record; private fields retained even when not publicly exposed.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -604,6 +608,8 @@ unsafe extern "C" {
     #[link_name = "camp_group_cooldown"]
     pub(crate) fn camp_group_cooldown(group: u32, out_cooldown: *mut i32) -> i32;
     /// Exact C-ABI `camp_group_state` host operation; pointer buffers obey the module safety contract.
+    #[link_name = "camp_group_capture_state"]
+    pub(crate) fn camp_group_capture_state(group: u32, out_state: *mut CampGroupCaptureState) -> i32;
     #[link_name = "camp_group_state"]
     pub(crate) fn camp_group_state(group: u32, out_state: *mut u32) -> i32;
     /// Exact C-ABI `camp_buffs` host operation; pointer buffers obey the module safety contract.
@@ -875,6 +881,12 @@ unsafe extern "C" {
     /// Exact C-ABI `DistanceField_Set` host operation; pointer buffers obey the module safety contract.
     #[link_name = "bc_DistanceField_Set"]
     pub(crate) fn DistanceField_Set(field: *mut u16, x: i32, y: i32, distance: u16) -> i32;
+    /// Copy complete distance storage into an existing field.
+    #[link_name = "bc_DistanceField_Copy"]
+    pub(crate) fn DistanceField_Copy(source: *const u16, destination: *mut u16) -> i32;
+    /// Copy mask-selected logical distances into an existing field.
+    #[link_name = "bc_DistanceField_CopyWithMask"]
+    pub(crate) fn DistanceField_CopyWithMask(source: *const u16, mask: *const u64, destination: *mut u16) -> i32;
     /// Exact C-ABI `DistanceField_ComputeWithExpansionCount` host operation; pointer buffers obey the module safety contract.
     #[link_name = "bc_DistanceField_ComputeWithExpansionCount"]
     pub(crate) fn DistanceField_ComputeWithExpansionCount(
@@ -2128,6 +2140,14 @@ pub(crate) unsafe fn DistanceField_Set(field: *mut u16, x: i32, y: i32, distance
         &[field as usize, x as usize, y as usize, distance as usize],
     ) as i32
 }
+#[cfg(test)]
+pub(crate) unsafe fn DistanceField_Copy(source: *const u16, destination: *mut u16) -> i32 {
+    crate::fake::call("bc_DistanceField_Copy", &[source as usize, destination as usize]) as i32
+}
+#[cfg(test)]
+pub(crate) unsafe fn DistanceField_CopyWithMask(source: *const u16, mask: *const u64, destination: *mut u16) -> i32 {
+    crate::fake::call("bc_DistanceField_CopyWithMask", &[source as usize, mask as usize, destination as usize]) as i32
+}
 /// Exact C-ABI `DistanceField_ComputeWithExpansionCount` host operation; pointer buffers obey the module safety contract.
 #[cfg(test)]
 pub(crate) unsafe fn DistanceField_ComputeWithExpansionCount(
@@ -2173,4 +2193,9 @@ pub(crate) unsafe fn DistanceField_ComputeToWithExpansionCount(
             out_expansions as usize,
         ],
     ) as i32
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn camp_group_capture_state(group: u32, out_state: *mut CampGroupCaptureState) -> i32 {
+    crate::fake::call("camp_group_capture_state", &[group as usize, out_state as usize]) as i32
 }
