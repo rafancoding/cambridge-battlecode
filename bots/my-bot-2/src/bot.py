@@ -55,27 +55,32 @@ def move_towards_closest(goals):
         return False
     
     blocked = blocked_tiles()
-
+    
     original_goals = cambc.Bitboard()
     original_goals |= goals
 
+    
     goals &= (~blocked | cambc.vision.camp_tiles())
-
-    if goals.is_empty():
-        goals = original_goals
 
     if goals.is_set(origin):
         goals.set(origin, False)
 
     if goals.is_empty():
+        if LOG_EVENTS:
+            print(
+                f"PATH_NO_VALID_GOALS round={cambc.round_number()} "
+                f"pos=({origin.x},{origin.y})"
+            )
         return False
 
+    
     if LOG_EVENTS:
         print(
             f"PATH after_filter={len(list(goals.positions()))}"
         )
-        if goals.is_empty():
-            return False
+
+    if goals.is_empty():
+        return False
 
     if LOG_EVENTS:
         print(
@@ -115,24 +120,31 @@ def move_towards_closest(goals):
 
     if finite_candidates:
         finite_candidates.sort(key=lambda item: item[0])
-        best_dist, best_pos = finite_candidates[0]
 
-        if LOG_EVENTS:
-            print(
-                f"PATH round={cambc.round_number()} "
-                f"from=({origin.x},{origin.y}) "
-                f"to=({best_pos.x},{best_pos.y}) "
-                f"dist={best_dist} "
-                f"origin_dist={origin_dist} "
-                f"candidates={len(finite_candidates)}"
-            )
+        for best_dist, best_pos in finite_candidates:
+            try:
+                result = me.move_absolute(best_pos)
 
-        result = me.move_absolute(best_pos)
+                if LOG_EVENTS:
+                    print(
+                        f"PATH_MOVE round={cambc.round_number()} "
+                        f"from=({origin.x},{origin.y}) "
+                        f"to=({best_pos.x},{best_pos.y}) "
+                        f"dist={best_dist} "
+                        f"result={result}"
+                    )
 
-        if LOG_EVENTS:
-            print(f"PATH_MOVE result={result}")
+                if result:
+                    return True
 
-        return result
+            except cambc.Error as exc:
+                if LOG_EVENTS:
+                    print(
+                        f"MOVE_REJECTED round={cambc.round_number()} "
+                        f"from=({origin.x},{origin.y}) "
+                        f"to=({best_pos.x},{best_pos.y}) "
+                        f"error={exc}"
+                    )
 
     if LOG_EVENTS:
         print(
@@ -205,6 +217,30 @@ def use_damage_ability_on_champion(enemy):
 
     return False
 
+def fight_visible_enemies(me):
+    enemies = [
+        enemy
+        for enemy in cambc.vision.champions(Team.ENEMY)
+        if enemy.is_visible() and enemy.health() > 0
+    ]
+
+    # Attackable enemies first, then lower health, then closer.
+    enemies.sort(
+        key=lambda enemy: (
+            not me.attack_tiles().is_set(enemy.position()),
+            enemy.health(),
+            distance(me.position(), enemy.position()),
+        )
+    )
+
+    for enemy in enemies:
+        if use_damage_ability_on_champion(enemy):
+            return True
+
+        if attack_if_in_range(enemy):
+            return True
+
+    return False
 
 def use_escape_ability(me):
     pos = me.position()
@@ -252,10 +288,15 @@ def use_escape_ability(me):
 
         try:
             tiles = ability.valid_tiles()
+            blocked = blocked_tiles()
+
             candidates = [
                 tile for tile in tiles.positions()
-                if tile != pos and danger_score(tile) > current_score
+                if tile != pos
+                and not blocked.is_set(tile)
+                and danger_score(tile) > current_score
             ]
+
             if not candidates:
                 continue
 
@@ -298,7 +339,6 @@ def use_escape_ability(me):
 
     return False
 
-
 def farm_camps(bot, avoid):
     me = cambc.me()
     pos = me.position()
@@ -310,11 +350,15 @@ def farm_camps(bot, avoid):
         if camp.is_monolith() and camp.health() > 0
     }
 
-    # Attack visible ordinary camps before choosing where to move.
+    # Attack visible golems before ordinary camps.
     # Monoliths must never be attacked.
-    for camp in cambc.vision.camps():
-        if camp.is_monolith():
-            continue
+    camps = [
+        camp for camp in cambc.vision.camps()
+        if not camp.is_monolith() and camp.health() > 0
+    ]
+    camps.sort(key=lambda camp: not camp.is_golem())
+
+    for camp in camps:
         if use_damage_ability_on_camp(camp):
             return
         if attack_if_in_range(camp):
@@ -330,12 +374,18 @@ def farm_camps(bot, avoid):
         if until > now
     }
 
+    # Map visible golem spawn tiles for movement prioritisation.
+    golem_tiles = {
+        camp.spawn_position()
+        for camp in cambc.vision.camps()
+        if camp.is_golem() and camp.health() > 0
+    }
+
     # Keep the current target if it is still a valid camp spawn tile.
     target = bot.farm_target
     target_valid = False
 
     if target is not None:
-        # Do not retain a target that is a living monolith spawn tile.
         if target in monolith_tiles:
             bot.farm_target = None
         else:
@@ -382,18 +432,20 @@ def farm_camps(bot, avoid):
                 if tile == pos:
                     continue
 
-                # Do not select a living monolith spawn tile.
                 if tile in monolith_tiles:
                     continue
 
                 if tile in bot.failed_farm_targets:
                     continue
 
-                candidates.append((distance(pos, tile), tile))
+                # Prefer golem spawn tiles, then choose the nearest target.
+                is_golem_tile = tile in golem_tiles
+                candidates.append((not is_golem_tile, distance(pos, tile), tile))
 
         if candidates:
-            candidates.sort(key=lambda item: item[0])
-            bot.farm_target = candidates[0][1]
+            candidates.sort(key=lambda item: (item[0], item[1]))
+            bot.farm_target = candidates[0][2]
+
             if LOG_EVENTS:
                 print(f"NEW_FARM_TARGET round={now} target={bot.farm_target}")
 
@@ -405,8 +457,6 @@ def farm_camps(bot, avoid):
         target = None
 
     if target is None:
-        # No available camp: keep exploring, but don't retain a stale
-        # farm target that can pull the champion back next action.
         bot.farm_target = None
         bot.explore(me)
         return
@@ -425,7 +475,6 @@ def farm_camps(bot, avoid):
     if blocked.is_set(target):
         nearby = tiles_around(target, 1)
         nearby.set(target, False)
-        goals = cambc.Bitboard()
 
         for tile in nearby.positions():
             if not blocked.is_set(tile):
@@ -435,7 +484,7 @@ def farm_camps(bot, avoid):
 
     if goals.is_set(pos):
         return
-
+    
     moved = move_towards_closest(goals)
 
     if LOG_EVENTS:
@@ -476,10 +525,10 @@ def threatened(me):
     for camp in cambc.vision.camps():
         if (
             camp.health() > 0
+            and camp.is_monolith()
             and distance(here, camp.position()) <= FLEE_DIST
         ):
             return True
-
     return False
 
 
@@ -604,37 +653,43 @@ class Bot:
             self.explore_target = None
 
         # Choose a new camp spawn tile only when needed.
-        visible = cambc.vision.visible_tiles()
+
         candidates = []
-
-        for group in game_map.camp_groups():
-            if (
-                not (group.spawn_tiles() & visible).is_empty()
-                and isinstance(group.state(), game_map.CampGroupRespawning)
-            ):
-                continue
-
-            for tile in group.spawn_tiles().positions():
-                if tile in self.failed_farm_targets:
-                    continue
-
-                d = distance(pos, tile)
-                if d > 1:
-                    candidates.append((d, tile))
 
         if not candidates:
             centre = cambc.Vec2(
                 game_map.width() // 2,
                 game_map.height() // 2,
             )
-            self.explore_target = centre
-        else:
-            candidates.sort(key=lambda item: item[0])
-            self.explore_target = candidates[0][1]
+            candidates = [(distance(pos, centre), centre)]
 
+        candidates.sort(key=lambda item: item[0])
+
+        # Try several nearby targets instead of getting stuck
+        # on the closest target when it is unreachable.
+        for _, target in candidates:
+            goals = cambc.Bitboard()
+            goals.set(target)
+
+            if move_towards_closest(goals):
+                self.explore_target = target
+                return True
+
+        # No camp target made progress: try the map centre.
+        centre = cambc.Vec2(
+            game_map.width() // 2,
+            game_map.height() // 2,
+        )
         goals = cambc.Bitboard()
-        goals.set(self.explore_target)
-        return move_towards_closest(goals)
+        goals.set(centre)
+
+        if move_towards_closest(goals):
+            self.explore_target = centre
+            return True
+
+        self.explore_target = None
+        return False
+
 
     def play_turn(self):
         if LOG_EVENTS:
@@ -664,21 +719,33 @@ class Bot:
         ):
             return
 
-        # Interrupt visible enemy recalls when practical.
-        if intercept_enemy_recall(me):
-            return
-
         if use_escape_ability(me):
             return
 
-        # Recall to spawn when critically wounded.
+        
+        
+        # Recall at critical health. First try to move toward allied spawn.
         if me.health() < me.base_stats().base_health * 0.35:
             if threatened(me):
                 if flee_to_spawn():
                     return
+
+                if use_escape_ability(me):
+                    return
+
             else:
-                me.recall()
-                return
+                # No nearby threat detected: still try to reposition before recalling.
+                if flee_to_spawn():
+                    return
+
+            me.recall()
+            return
+
+
+
+        # Interrupt visible enemy recalls when practical.
+        if intercept_enemy_recall(me):
+            return
 
         # Buy items while at the allied spawn.
         at_spawn = game_map.spawn_region(Team.ALLY).is_set(me.position())
@@ -729,18 +796,20 @@ class Bot:
                                 f"gems={me.gem_count()}"
                             )
 
-            move_towards_closest(goals)
+            moved = move_towards_closest(goals)
+
+            if not moved:
+                if LOG_EVENTS:
+                    print(
+                        f"BANK_MOVE_FAILED round={cambc.round_number()} "
+                        f"target={self.bank_target}"
+                    )
+                self.bank_target = None
+
             return
         
-        for enemy in cambc.vision.champions(Team.ENEMY):
-            if not enemy.is_visible() or enemy.health() <= 0:
-                continue
-
-            if use_damage_ability_on_champion(enemy):
-                return
-
-            if attack_if_in_range(enemy):
-                return
+        if fight_visible_enemies(me):
+            return
 
         if LOG_EVENTS:
             print("BEFORE FARM")
